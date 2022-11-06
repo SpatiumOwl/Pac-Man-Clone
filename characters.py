@@ -1,8 +1,13 @@
+from math import floor
 import pygame
 import os
+from enum import Enum
+from queue import SimpleQueue
+
 import environment as env
 import userevents as ue
-from enum import Enum
+from map_graph import MapGraph
+
 
 # Enum for direction for different characters
 class Direction(Enum):
@@ -27,8 +32,11 @@ class GameCharacter:
         self.load_animation_frames()
         self.current_frame = 0
 
+        spawn_pos_px = ((spawn_pos[0]*env.Map.TILE_SIZE - GameCharacter.CHARACTER_SPRITE_SIZE[0]//2 + env.Map.TILE_SIZE//2)*env.Map.SCALING, 
+            (spawn_pos[1]*env.Map.TILE_SIZE + env.Map.FIELD_OFFSET - GameCharacter.CHARACTER_SPRITE_SIZE[1]//2 + env.Map.TILE_SIZE//2)*env.Map.SCALING)
+
         # Create and place all the colliders on the map
-        self.body_collider = pygame.Rect(spawn_pos[0]*env.Map.SCALING, spawn_pos[1]*env.Map.SCALING, 
+        self.body_collider = pygame.Rect(spawn_pos_px[0], spawn_pos_px[1], 
             self.CHARACTER_SPRITE_SIZE[0]*env.Map.SCALING, self.CHARACTER_SPRITE_SIZE[1]*env.Map.SCALING)
         self.eat_collider = pygame.Rect(self.body_collider.x + self.EAT_COLLIDER_INNER_MARGIN*env.Map.SCALING, 
             self.body_collider.y + self.EAT_COLLIDER_INNER_MARGIN*env.Map.SCALING, 
@@ -125,6 +133,18 @@ class GameCharacter:
             self.body_collider.x = -self.body_collider.width
         elif self.body_collider.x < -self.body_collider.width:
             self.body_collider.x = env.Map.MAP_WIDTH * env.Map.SCALING
+    
+    def get_current_tile(self):
+        pos = [self.body_collider.centerx, self.body_collider.centery]
+        pos[1] -= env.Map.FIELD_OFFSET * env.Map.SCALING
+
+        pos[0] /= (env.Map.TILE_SIZE * env.Map.SCALING)
+        pos[1] /= (env.Map.TILE_SIZE * env.Map.SCALING)
+        
+        pos[0] = floor(pos[0])
+        pos[1] = floor(pos[1])
+        
+        return (pos[0], pos[1])
 
 class PacMan(GameCharacter):    
     SPEED_IN_UNITS = 2
@@ -212,7 +232,7 @@ class PacMan(GameCharacter):
         for ghost in ghosts:
             if (ghost.current_state == GhostState.VULNERABLE):
                 if (self.eat_collider.colliderect(ghost.body_collider)):
-                    ghosts.remove(ghost)
+                    ghost.defeat()
                     pygame.event.post(pygame.event.Event(ue.UserEvents.ATE_GHOST))
                     env.SFX.EAT_GHOST.play()
 
@@ -220,30 +240,41 @@ class Ghost(GameCharacter):
     # Ghosts have two different speeds for regular and vulnerable mode
     DEFAULT_SPEED = 2
     SLOW_SPEED = 1
+    RUN_TO_RESPAWN_SPEED = 4
+    MOVE_QUEUE_DELAY = 1
+
+    PAC_MAN_CHASE_DISTANCE = 10
     
     # Walk patterns are temporary placeholders for AI
     # Only red color has been created so far
-    def __init__(self, window, spawn_pos, color, walk_pattern):
-        self.WALK_PATTERN = walk_pattern
+    def __init__(self, window, spawn_pos, color, patrol_points):
         self.color = color
 
         # Ghost can be in three different states (see below). Defeated state isn't implemented yet
-        self.current_state = GhostState.DEFAULT
+        self.current_state = GhostState.PATROL
         super().__init__(window, spawn_pos)
         self.current_spriteset = self.IDLE_RIGHT_SPRITESET
 
-        # Anchor is a point around which the ghost goes in its walk pattern
-        self.anchor = [self.body_collider.x, self.body_collider.y]
+        # Initialise patrol
+        self.patrol_queue = SimpleQueue()
+        for patrol_point in patrol_points:
+            self.patrol_queue.put(patrol_point)
+        
+        self.current_patrol_point = self.patrol_queue.get()
 
-        if (walk_pattern == WalkPattern.HORIZONTAL_8):
-            self.direction = Direction.RIGHT
-        elif (walk_pattern == WalkPattern.VERTICAL_8):
-            self.direction = Direction.UP
+        # Vulnerability effect stack
+        self.vulnerability_effect_count = 0
+
+        # Initialize move queue
+        self.move_queue = SimpleQueue()
+        for i in range(Ghost.MOVE_QUEUE_DELAY):
+            self.move_queue.put(self.get_current_tile())
     
     def load_animation_frames(self):
         path = self.get_ghost_animation_frames_path()
         self.load_idle_animation_frames(path)
         self.load_vulnerable_animation_frames(path)
+        self.load_defeated_animation_frames(path)
     
     # Theoretically all the colors are usable now, but only red sprites are done at the moment
     def get_ghost_animation_frames_path(self):
@@ -313,51 +344,157 @@ class Ghost(GameCharacter):
                 os.path.join(path, "Vulnerable_1.png")
             ), (self.CHARACTER_SPRITE_SIZE[0]*env.Map.SCALING, self.CHARACTER_SPRITE_SIZE[1]*env.Map.SCALING)))
 
+    def load_defeated_animation_frames(self, path):
+        self.DEFEATED_RIGHT_SPRITESET = []
+        self.DEFEATED_RIGHT_SPRITESET.append(pygame.transform.scale(
+            pygame.image.load(
+                os.path.join(path, "Defeated_right.png")
+            ), (self.CHARACTER_SPRITE_SIZE[0]*env.Map.SCALING, self.CHARACTER_SPRITE_SIZE[1]*env.Map.SCALING)))
+
+        self.DEFEATED_LEFT_SPRITESET = []
+        self.DEFEATED_LEFT_SPRITESET.append(pygame.transform.scale(
+            pygame.image.load(
+                os.path.join(path, "Defeated_left.png")
+            ), (self.CHARACTER_SPRITE_SIZE[0]*env.Map.SCALING, self.CHARACTER_SPRITE_SIZE[1]*env.Map.SCALING)))
+
+        self.DEFEATED_UP_SPRITESET = []
+        self.DEFEATED_UP_SPRITESET.append(pygame.transform.scale(
+            pygame.image.load(
+                os.path.join(path, "Defeated_up.png")
+            ), (self.CHARACTER_SPRITE_SIZE[0]*env.Map.SCALING, self.CHARACTER_SPRITE_SIZE[1]*env.Map.SCALING)))
+
+        self.DEFEATED_DOWN_SPRITESET = []
+        self.DEFEATED_DOWN_SPRITESET.append(pygame.transform.scale(
+            pygame.image.load(
+                os.path.join(path, "Defeated_down.png")
+            ), (self.CHARACTER_SPRITE_SIZE[0]*env.Map.SCALING, self.CHARACTER_SPRITE_SIZE[1]*env.Map.SCALING)))
+
     def update(self, walls, pac_man):
-        self.set_speed()
-        self.execute_walk_pattern(walls)
+        self.change_state(pac_man)
+        self.execute_states(walls, pac_man)
         self.animate()
         self.eat_pac_man(pac_man)
+
+    # State machine change state commands
+    def change_state(self, pac_man):
+        self.patrol_chase_interchange(pac_man)
+        self.respawn_if_defeated()
+    
+    def put_on_vulnerability(self):
+        if (self.current_state != GhostState.DEFEATED):
+            self.vulnerability_effect_count += 1
+            self.current_state = GhostState.VULNERABLE
+    def take_off_vulnerability(self):
+        if (self.current_state == GhostState.VULNERABLE):
+            self.vulnerability_effect_count -= 1
+
+            if (self.vulnerability_effect_count == 0):
+                self.current_state = GhostState.PATROL
+    
+    def patrol_chase_interchange(self, pac_man):
+        if (self.current_state in [GhostState.PATROL, GhostState.CHASE]):
+            if (env.MapGraph.manhattan_distance(self.get_current_tile(), pac_man.get_current_tile())
+                > Ghost.PAC_MAN_CHASE_DISTANCE):
+                self.current_state = GhostState.PATROL
+            else:
+                self.current_state = GhostState.CHASE
+    
+    def defeat(self):
+        self.current_state = GhostState.DEFEATED
+        self.vulnerability_effect_count = 0
+
+    def respawn_if_defeated(self):
+        if (self.current_state == GhostState.DEFEATED):
+            if (self.body_collider.colliderect(env.Map.GHOST_SPAWN)):
+                self.current_state = GhostState.PATROL
+
+    # State machine execution commands
+    def execute_states(self, walls, pac_man):
+        self.set_speed()
+
+        if (self.current_state == GhostState.CHASE):
+            self.chase_pac_man(walls, pac_man)
+        elif (self.current_state == GhostState.PATROL):
+            self.patrol(walls)
+        elif (self.current_state == GhostState.VULNERABLE):
+            self.run_away(walls, pac_man)
+        elif (self.current_state == GhostState.DEFEATED):
+            self.go_to_spawn(walls)
+
+    def chase_pac_man(self, walls, pac_man):
+        path = env.Map.MAP_GRAPH.get_shortest_path(self.get_current_tile(), pac_man.get_current_tile())
+        self.move_along_the_path(walls, path)
+    
+    def patrol(self, walls):
+        if (self.get_current_tile() == self.current_patrol_point):
+            self.patrol_queue.put(self.current_patrol_point)
+            self.current_patrol_point = self.patrol_queue.get()
+        else:
+            path = env.Map.MAP_GRAPH.get_shortest_path(self.get_current_tile(), self.current_patrol_point)
+            self.move_along_the_path(walls, path)
+
+    def run_away(self, walls, pac_man):
+        path_to_pac_man = env.Map.MAP_GRAPH.get_shortest_path(self.get_current_tile(), pac_man.get_current_tile())
+
+        if (len(path_to_pac_man) > 1):
+            move_to_pac_man = path_to_pac_man[1]
+            possible_moves = env.Map.MAP_GRAPH.neighbors(self.get_current_tile())
+            safe_moves = [move for move in possible_moves if move != move_to_pac_man]
+
+            new_path = [self.get_current_tile()]
+
+            # Try opposite to Pac-Man
+            vec = (self.get_current_tile()[0] - move_to_pac_man[0], self.get_current_tile()[1] - move_to_pac_man[1])
+            opposite_move = (self.get_current_tile()[0] + vec[0], self.get_current_tile()[1] + vec[1])
+            if (opposite_move in safe_moves):
+                new_path.append(opposite_move)
+            else:
+                # Any other safe move
+                new_path.append(safe_moves[0])
+            
+            self.move_along_the_path(walls, new_path)
+
+    def go_to_spawn(self, walls):
+        if (self.get_current_tile() != env.Map.GHOST_SPAWN_POINT):
+            path = env.Map.MAP_GRAPH.get_shortest_path(self.get_current_tile(), env.Map.GHOST_SPAWN_POINT)
+            self.move_along_the_path(walls, path)
 
     # Ghosts are slow only in vulnerable state
     def set_speed(self):
         if (self.current_state == GhostState.VULNERABLE):
             self.speed = self.SLOW_SPEED * env.Map.SCALING
+        elif (self.current_state == GhostState.DEFEATED):
+            self.speed = self.RUN_TO_RESPAWN_SPEED * env.Map.SCALING
         else:
             self.speed = self.DEFAULT_SPEED * env.Map.SCALING
 
-    def execute_walk_pattern(self, walls):
-        if (self.WALK_PATTERN == WalkPattern.HORIZONTAL_8):
-            self.execute_horizontal_8_walk_pattern(walls)
-        elif (self.WALK_PATTERN == WalkPattern.VERTICAL_8):
-            self.execute_vertical_8_walk_pattern(walls)
-
-    # Back and forth horizontally within 8 tiles
-    def execute_horizontal_8_walk_pattern(self, walls):
-        if (self.body_collider.x <= self.anchor[0] - 4 * env.Map.TILE_SIZE * env.Map.SCALING):
-            self.move(Direction.RIGHT, walls)
-        elif (self.body_collider.x >= self.anchor[0] + 4 * env.Map.TILE_SIZE * env.Map.SCALING):
+    def move_along_the_path(self, walls, path):
+        next_tile = path[1]
+        current_tile = self.get_current_tile()
+        if (next_tile[0] < current_tile[0]):
             self.move(Direction.LEFT, walls)
-        else:
-            self.move(self.direction, walls)
-    
-    # Back and forth vertically within 8 tiles
-    def execute_vertical_8_walk_pattern(self, walls):
-        if (self.body_collider.y <= self.anchor[1] - 4 * env.Map.TILE_SIZE * env.Map.SCALING):
-            self.move(Direction.DOWN, walls)
-        elif (self.body_collider.y >= self.anchor[1] + 4 * env.Map.TILE_SIZE * env.Map.SCALING):
+        elif (next_tile[0] > current_tile[0]):
+            self.move(Direction.RIGHT, walls)
+        elif (next_tile[1] < current_tile[1]):
             self.move(Direction.UP, walls)
-        else:
-            self.move(self.direction, walls)
-
+        elif (next_tile[1] > current_tile[1]):
+            self.move(Direction.DOWN, walls)
+    
     # Choose the current spriteset depending on state and direction
     def set_spriteset(self):
         new_spriteset = []
         if (self.current_state == GhostState.VULNERABLE):
             new_spriteset = self.VULNERABLE_SPRITESET
         elif (self.current_state == GhostState.DEFEATED):
-            new_spriteset = self.DEFEATED_SPRITESET
-        elif (self.current_state == GhostState.DEFAULT):
+            if (self.direction == Direction.RIGHT):
+                new_spriteset = self.DEFEATED_RIGHT_SPRITESET
+            elif (self.direction == Direction.LEFT):
+                new_spriteset = self.DEFEATED_LEFT_SPRITESET
+            elif (self.direction == Direction.UP):
+                new_spriteset = self.DEFEATED_UP_SPRITESET
+            elif (self.direction == Direction.DOWN):
+                new_spriteset = self.DEFEATED_DOWN_SPRITESET
+        elif (self.current_state in [GhostState.PATROL, GhostState.CHASE]):
             if (self.direction == Direction.RIGHT):
                 new_spriteset = self.IDLE_RIGHT_SPRITESET
             elif (self.direction == Direction.LEFT):
@@ -375,14 +512,15 @@ class Ghost(GameCharacter):
         return self.current_spriteset[self.current_frame]
 
     def eat_pac_man(self, pac_man):
-        if (self.current_state == GhostState.DEFAULT):
+        if (self.current_state == GhostState.CHASE):
             if self.eat_collider.colliderect(pac_man.body_collider):
                 pygame.event.post(pygame.event.Event(ue.UserEvents.GAME_OVER))
         
 class GhostState(Enum):
-    DEFAULT = 0
+    PATROL = 0
     VULNERABLE = 1
     DEFEATED = 2
+    CHASE = 3
 
 class GhostColor(Enum):
     RED = 0

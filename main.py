@@ -27,26 +27,25 @@ def main():
 
     score = 0
 
-    pac_man = char.PacMan(WIN, [104, env.Map.FIELD_OFFSET + 132])
+    pac_man = char.PacMan(WIN, (13, 17))
     walls = env.Walls(env.Map.FIELD_OFFSET)
     pellets = env.Pellets(WIN, env.Map.FIELD_OFFSET)
     ghosts = [
-        char.Ghost(WIN, [env.Map.MAP_WIDTH//2 - 8, 36 + env.Map.FIELD_OFFSET], char.GhostColor.RED, char.WalkPattern.HORIZONTAL_8),
-        char.Ghost(WIN, [164, 108 + env.Map.FIELD_OFFSET], char.GhostColor.RED, char.WalkPattern.VERTICAL_8)
+        #char.Ghost(WIN, [env.Map.MAP_WIDTH//2 - 8, 36 + env.Map.FIELD_OFFSET], char.GhostColor.RED, char.WalkPattern.HORIZONTAL_8)
+        char.Ghost(WIN, (1, 1), char.GhostColor.RED, [(1, 1), (12, 1), (12, 11), (6, 11)])
     ]
     # Function to be executed in a separate thread to make ghosts vulnerable for a short amount of time
     def make_ghosts_vulnerable():
-        env.SFX.SUPER_PELLET.play(-1)
+        env.SFX.SUPER_PELLET.stop()
+        env.SFX.SUPER_PELLET.play(loops=-1, maxtime = int(POWER_PELLET_DURATION * 1000))
         for ghost in ghosts:
-            if (ghost.current_state == char.GhostState.DEFAULT):
-                ghost.current_state = char.GhostState.VULNERABLE
+            ghost.put_on_vulnerability()
         
         time.sleep(POWER_PELLET_DURATION)
 
         for ghost in ghosts:
-            if (ghost.current_state == char.GhostState.VULNERABLE):
-                ghost.current_state = char.GhostState.DEFAULT
-        env.SFX.SUPER_PELLET.stop()
+            ghost.take_off_vulnerability()
+        #env.SFX.SUPER_PELLET.stop()
 
     play_intro(pellets, walls, ghosts, pac_man)
 
