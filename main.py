@@ -31,8 +31,10 @@ def main():
     walls = env.Walls(env.Map.FIELD_OFFSET)
     pellets = env.Pellets(WIN, env.Map.FIELD_OFFSET)
     ghosts = [
-        #char.Ghost(WIN, [env.Map.MAP_WIDTH//2 - 8, 36 + env.Map.FIELD_OFFSET], char.GhostColor.RED, char.WalkPattern.HORIZONTAL_8)
-        char.Ghost(WIN, (1, 1), char.GhostColor.RED, [(1, 1), (12, 1), (12, 11), (6, 11)])
+        char.Ghost(WIN, (1, 1), char.GhostColor.RED, [(1, 1), (12, 1), (12, 11), (6, 11)]),
+        char.Ghost(WIN, (1, 29), char.GhostColor.RED, [(1, 29), (7, 23), (12, 29)]),
+        char.Ghost(WIN, (26, 1), char.GhostColor.RED, [(27-1, 29), (27-12, 1), (27-12, 11), (27-6, 11)]),
+        char.Ghost(WIN, (26, 29), char.GhostColor.RED, [(27-1, 29), (27-7, 23), (27-12, 29)])
     ]
     # Function to be executed in a separate thread to make ghosts vulnerable for a short amount of time
     def make_ghosts_vulnerable():
