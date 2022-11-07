@@ -241,7 +241,9 @@ class Ghost(GameCharacter):
     DEFAULT_SPEED = 2
     SLOW_SPEED = 1
     RUN_TO_RESPAWN_SPEED = 4
-    MOVE_QUEUE_DELAY = 1
+    
+    PLAN_LENGTH_CHASE = 2
+    PLAN_LENGTH_VULNERABLE = 3
 
     PAC_MAN_CHASE_DISTANCE = 10
     
@@ -265,10 +267,9 @@ class Ghost(GameCharacter):
         # Vulnerability effect stack
         self.vulnerability_effect_count = 0
 
-        # Initialize move queue
-        self.move_queue = SimpleQueue()
-        for i in range(Ghost.MOVE_QUEUE_DELAY):
-            self.move_queue.put(self.get_current_tile())
+        # Initialize plan
+        self.plan = SimpleQueue()
+        self.next_plan_point = self.get_current_tile()
     
     def load_animation_frames(self):
         path = self.get_ghost_animation_frames_path()
@@ -377,19 +378,30 @@ class Ghost(GameCharacter):
 
     # State machine change state commands
     def change_state(self, pac_man):
+        previous_state = self.current_state
+
         self.patrol_chase_interchange(pac_man)
         self.respawn_if_defeated()
+
+        if (previous_state != self.current_state):
+            self.empty_plan()
     
+    def empty_plan(self):
+        while (not self.plan.empty()):
+            self.plan.get()
+        self.next_plan_point = self.get_current_tile()
+
     def put_on_vulnerability(self):
         if (self.current_state != GhostState.DEFEATED):
             self.vulnerability_effect_count += 1
             self.current_state = GhostState.VULNERABLE
+    
     def take_off_vulnerability(self):
         if (self.current_state == GhostState.VULNERABLE):
             self.vulnerability_effect_count -= 1
 
             if (self.vulnerability_effect_count == 0):
-                self.current_state = GhostState.PATROL
+                self.current_state = GhostState.PATROL   
     
     def patrol_chase_interchange(self, pac_man):
         if (self.current_state in [GhostState.PATROL, GhostState.CHASE]):
@@ -412,52 +424,71 @@ class Ghost(GameCharacter):
     def execute_states(self, walls, pac_man):
         self.set_speed()
 
+        # Update the plan
         if (self.current_state == GhostState.CHASE):
-            self.chase_pac_man(walls, pac_man)
+            self.chase_pac_man(pac_man)
         elif (self.current_state == GhostState.PATROL):
-            self.patrol(walls)
+            self.patrol()
         elif (self.current_state == GhostState.VULNERABLE):
-            self.run_away(walls, pac_man)
+            self.run_away(pac_man)
         elif (self.current_state == GhostState.DEFEATED):
-            self.go_to_spawn(walls)
+            self.go_to_spawn()
+        
+        self.move_along_the_plan(walls)
 
-    def chase_pac_man(self, walls, pac_man):
-        path = env.Map.MAP_GRAPH.get_shortest_path(self.get_current_tile(), pac_man.get_current_tile())
-        self.move_along_the_path(walls, path)
+    def chase_pac_man(self, pac_man):
+        if (self.plan.empty()):
+            path = env.Map.MAP_GRAPH.get_shortest_path(self.get_current_tile(), pac_man.get_current_tile())
+            print ("CHASE: ", self.get_current_tile(), path)
+            i = 1
+            while (i <= Ghost.PLAN_LENGTH_CHASE and i < len(path)):
+                self.plan.put(path[i])
+                i += 1
     
-    def patrol(self, walls):
+    def patrol(self):
         if (self.get_current_tile() == self.current_patrol_point):
             self.patrol_queue.put(self.current_patrol_point)
             self.current_patrol_point = self.patrol_queue.get()
         else:
-            path = env.Map.MAP_GRAPH.get_shortest_path(self.get_current_tile(), self.current_patrol_point)
-            self.move_along_the_path(walls, path)
+            if (self.plan.empty()):
+                path = env.Map.MAP_GRAPH.get_shortest_path(self.get_current_tile(), self.current_patrol_point)
+                print ("PATROL: ", self.get_current_tile(), path)
+                for move in path[1::]:
+                    self.plan.put(move)
 
-    def run_away(self, walls, pac_man):
+    def run_away(self, pac_man):
         path_to_pac_man = env.Map.MAP_GRAPH.get_shortest_path(self.get_current_tile(), pac_man.get_current_tile())
 
         if (len(path_to_pac_man) > 1):
-            move_to_pac_man = path_to_pac_man[1]
-            possible_moves = env.Map.MAP_GRAPH.neighbors(self.get_current_tile())
-            safe_moves = [move for move in possible_moves if move != move_to_pac_man]
+            if (self.plan.empty()):
+                away_from_move = path_to_pac_man[1]
+                current_pos = self.get_current_tile()
+                
+                for i in range(Ghost.PLAN_LENGTH_VULNERABLE):
+                    next_move = Ghost.get_runaway_move(away_from_move, current_pos)
+                    self.plan.put(next_move)
+                    away_from_move = current_pos
+                    current_pos = next_move
 
-            new_path = [self.get_current_tile()]
+    def get_runaway_move(away_from_move, current_pos):
+        possible_moves = env.Map.MAP_GRAPH.neighbors(current_pos)
+        safe_moves = [move for move in possible_moves if move != away_from_move]
+        
+        vec = (current_pos[0] - away_from_move[0], current_pos[1] - away_from_move[1])
+        opposite_move = (current_pos[0] + vec[0], current_pos[1] + vec[1])
+        if (opposite_move in safe_moves):
+            return opposite_move
+        else:
+            # Any other safe move
+            return safe_moves[0]
 
-            # Try opposite to Pac-Man
-            vec = (self.get_current_tile()[0] - move_to_pac_man[0], self.get_current_tile()[1] - move_to_pac_man[1])
-            opposite_move = (self.get_current_tile()[0] + vec[0], self.get_current_tile()[1] + vec[1])
-            if (opposite_move in safe_moves):
-                new_path.append(opposite_move)
-            else:
-                # Any other safe move
-                new_path.append(safe_moves[0])
-            
-            self.move_along_the_path(walls, new_path)
-
-    def go_to_spawn(self, walls):
+    def go_to_spawn(self):
         if (self.get_current_tile() != env.Map.GHOST_SPAWN_POINT):
-            path = env.Map.MAP_GRAPH.get_shortest_path(self.get_current_tile(), env.Map.GHOST_SPAWN_POINT)
-            self.move_along_the_path(walls, path)
+            if (self.plan.empty()):
+                path = env.Map.MAP_GRAPH.get_shortest_path(self.get_current_tile(), env.Map.GHOST_SPAWN_POINT)
+                print ("DEFEAT: ", self.get_current_tile(), path)
+                for move in path[1::]:
+                    self.plan.put(move)
 
     # Ghosts are slow only in vulnerable state
     def set_speed(self):
@@ -468,15 +499,25 @@ class Ghost(GameCharacter):
         else:
             self.speed = self.DEFAULT_SPEED * env.Map.SCALING
 
-    def move_along_the_path(self, walls, path):
-        next_tile = path[1]
+    def move_along_the_plan(self, walls):
         current_tile = self.get_current_tile()
+        if (current_tile != self.next_plan_point):
+            next_tile = self.next_plan_point
+        elif (not self.plan.empty()):
+            self.next_plan_point = self.plan.get()
+            next_tile = self.next_plan_point
+        else:
+            next_tile = current_tile
+        
+        print(current_tile, next_tile)
+           
         if (next_tile[0] < current_tile[0]):
             self.move(Direction.LEFT, walls)
         elif (next_tile[0] > current_tile[0]):
             self.move(Direction.RIGHT, walls)
         elif (next_tile[1] < current_tile[1]):
             self.move(Direction.UP, walls)
+            print("GO UP!")
         elif (next_tile[1] > current_tile[1]):
             self.move(Direction.DOWN, walls)
     

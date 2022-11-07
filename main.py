@@ -45,7 +45,6 @@ def main():
 
         for ghost in ghosts:
             ghost.take_off_vulnerability()
-        #env.SFX.SUPER_PELLET.stop()
 
     play_intro(pellets, walls, ghosts, pac_man)
 
